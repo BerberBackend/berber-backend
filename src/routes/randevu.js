@@ -6,10 +6,17 @@ const { smsGonder } = require("../services/smsService");
 
 const router = express.Router();
 
-// Hizmet tipleri ve süreleri (dakika) - güvenlik için süre burada sabit tutulur, mobilden gelen değer güvenilmez
+// Hizmet tipleri ve süreleri (dakika) - güvenlik için süre burada sabit tutulur
 const HIZMET_SURELERI = { sakal: 15, sac: 30, sac_sakal: 45 };
 
-// Belirli bir gün için dolu saatleri döndür (mobil uygulama bunlarla saatleri disable eder)
+// Postgres'ten gelen "2026-09-24 09:00:00" biçimindeki ham metni, hiçbir TZ dönüşümü
+// yapmadan "2026-09-24T09:00:00" biçimine çevirir (mobil tarafta güvenle Date'e çevrilebilsin diye)
+function normalizeTarih(pgDegeri) {
+  return pgDegeri ? pgDegeri.replace(" ", "T") : pgDegeri;
+}
+
+// Belirli bir gün için dolu saat ARALIKLARINI döndürür (başlangıç + süre).
+// Mobil uygulama, seçilen hizmetin süresine göre hangi saatlerin çakıştığını buradan hesaplar.
 router.get("/dolu-saatler", auth, subscriptionCheck, async (req, res, next) => {
   try {
     const { tarih } = req.query; // 'YYYY-MM-DD' formatında beklenir
@@ -20,7 +27,7 @@ router.get("/dolu-saatler", auth, subscriptionCheck, async (req, res, next) => {
     }
 
     const result = await pool.query(
-      `SELECT tarih_saat FROM randevu
+      `SELECT tarih_saat, sure_dk FROM randevu
              WHERE berber_id = $1
                AND tarih_saat::date = $2::date
                AND durum != 'iptal'
@@ -28,47 +35,12 @@ router.get("/dolu-saatler", auth, subscriptionCheck, async (req, res, next) => {
       [req.berberId, tarih],
     );
 
-    res.json(result.rows.map((r) => r.tarih_saat));
-  } catch (err) {
-    next(err);
-  }
-});
+    const doluAraliklar = result.rows.map((r) => ({
+      baslangic: r.tarih_saat.slice(11, 16), // 'HH:MM' - TZ dönüşümüne hiç girmeden
+      sure_dk: r.sure_dk,
+    }));
 
-// Bu gün için önerilecek bir sonraki boş saati hesaplar
-// (son randevunun bitiş saati, hiç randevu yoksa berberin günlük başlangıç saati)
-router.get("/sonraki-saat", auth, subscriptionCheck, async (req, res, next) => {
-  try {
-    const { tarih } = req.query;
-    if (!tarih) {
-      return res
-        .status(400)
-        .json({ hata: "tarih query parametresi zorunlu (YYYY-MM-DD)" });
-    }
-
-    const berberRes = await pool.query(
-      "SELECT gun_baslangic_saati FROM berber WHERE id = $1",
-      [req.berberId],
-    );
-    const baslangicSaati = berberRes.rows[0]?.gun_baslangic_saati || 9;
-
-    const sonRandevu = await pool.query(
-      `SELECT tarih_saat, sure_dk FROM randevu
-             WHERE berber_id = $1 AND tarih_saat::date = $2::date AND durum != 'iptal'
-             ORDER BY tarih_saat DESC LIMIT 1`,
-      [req.berberId, tarih],
-    );
-
-    let sonrakiSaat;
-    if (sonRandevu.rows.length === 0) {
-      sonrakiSaat = `${tarih}T${String(baslangicSaati).padStart(2, "0")}:00:00`;
-    } else {
-      const { tarih_saat, sure_dk } = sonRandevu.rows[0];
-      sonrakiSaat = new Date(
-        new Date(tarih_saat).getTime() + sure_dk * 60000,
-      ).toISOString();
-    }
-
-    res.json({ sonraki_saat: sonrakiSaat });
+    res.json(doluAraliklar);
   } catch (err) {
     next(err);
   }
@@ -119,7 +91,6 @@ router.post("/", auth, subscriptionCheck, async (req, res, next) => {
       );
       randevu = result.rows[0];
     } catch (err) {
-      // UNIQUE (berber_id, tarih_saat) ihlali -> bu saat başka biri tarafından az önce alınmış
       if (err.code === "23505") {
         return res
           .status(409)
@@ -135,19 +106,16 @@ router.post("/", auth, subscriptionCheck, async (req, res, next) => {
       [musteri_id],
     );
     const musteriAd = musteriRes.rows[0]?.ad || "";
-    const saatStr = new Date(tarih_saat).toLocaleString("tr-TR", {
-      day: "2-digit",
-      month: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    const saatStr = tarih_saat.slice(11, 16);
 
     const mesaj = `Sayın ${musteriAd}, randevunuz ${saatStr} için oluşturuldu.`;
     smsGonder(req.berberId, musteri_id, "onay", mesaj).catch((e) =>
       console.error("Onay SMS hatası:", e.message),
     );
 
-    res.status(201).json(randevu);
+    res
+      .status(201)
+      .json({ ...randevu, tarih_saat: normalizeTarih(randevu.tarih_saat) });
   } catch (err) {
     next(err);
   }
@@ -189,7 +157,11 @@ router.get("/", auth, subscriptionCheck, async (req, res, next) => {
     query += " ORDER BY r.tarih_saat";
 
     const result = await pool.query(query, params);
-    res.json(result.rows);
+    const randevular = result.rows.map((r) => ({
+      ...r,
+      tarih_saat: normalizeTarih(r.tarih_saat),
+    }));
+    res.json(randevular);
   } catch (err) {
     next(err);
   }
