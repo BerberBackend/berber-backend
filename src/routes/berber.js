@@ -113,6 +113,7 @@ router.get("/sms-ayarlari", auth, async (req, res, next) => {
 });
 
 // NetGSM ayarlarını kaydet/güncelle
+// NetGSM ayarlarını kaydet/güncelle -> önce NetGSM'e gerçek istek atıp bilgileri doğrular
 router.put("/sms-ayarlari", auth, async (req, res, next) => {
   try {
     const { netgsm_usercode, netgsm_password, netgsm_msgheader } = req.body;
@@ -121,6 +122,53 @@ router.put("/sms-ayarlari", auth, async (req, res, next) => {
       return res
         .status(400)
         .json({ hata: "netgsm_usercode ve netgsm_msgheader zorunlu" });
+    }
+
+    // Doğrulamada kullanılacak şifre: yeni girildiyse onu, girilmediyse mevcut kayıtlı şifreyi kullan
+    let dogrulamaSifresi = netgsm_password;
+    if (!dogrulamaSifresi) {
+      const mevcut = await pool.query(
+        "SELECT netgsm_password FROM berber WHERE id = $1",
+        [req.berberId],
+      );
+      dogrulamaSifresi = mevcut.rows[0]?.netgsm_password;
+    }
+    if (!dogrulamaSifresi) {
+      return res
+        .status(400)
+        .json({ hata: "API şifresi zorunlu (daha önce girilmemiş)" });
+    }
+
+    // NetGSM'e gerçek bir sorgu atıp kullanıcı kodu/şifreyi doğruluyoruz
+    let netgsmYaniti;
+    try {
+      const yanit = await axios.get(
+        "https://api.netgsm.com.tr/balance/list/get",
+        {
+          params: { usercode: netgsm_usercode, password: dogrulamaSifresi },
+        },
+      );
+      netgsmYaniti = String(yanit.data).trim();
+    } catch (err) {
+      console.error("NetGSM doğrulama isteği hatası:", err.message);
+      return res
+        .status(502)
+        .json({
+          hata: "NetGSM'e ulaşılamadı, lütfen daha sonra tekrar deneyin",
+        });
+    }
+
+    // NetGSM hatalı kullanıcı adı/şifre veya yetkisiz erişimde kısa bir hata kodu döner
+    // (örn. "30", "40", "50", "51", "70"); başarılı sorguda bakiye/kontör bilgisi döner.
+    const hataKoduMu =
+      /^(30|40|50|51|70)\b/.test(netgsmYaniti) ||
+      netgsmYaniti.toUpperCase().includes("HATA");
+    if (hataKoduMu) {
+      return res
+        .status(400)
+        .json({
+          hata: "NetGSM kullanıcı kodu veya şifre hatalı, lütfen bilgilerinizi kontrol edin",
+        });
     }
 
     if (netgsm_password) {
