@@ -72,6 +72,59 @@ router.post("/giris", async (req, res, next) => {
   }
 });
 
+// Şifre değiştir: mevcut şifre doğrulanır, yeni şifre kaydedilir ve yeni bir oturum token'ı üretilir.
+// Böylece bu hesapla açık olan DİĞER cihazların oturumu düşer; isteği atan cihaz yeni token'ı alıp devam eder.
+router.put("/sifre-degistir", auth, async (req, res, next) => {
+  try {
+    const { mevcut_sifre, yeni_sifre } = req.body;
+
+    if (!mevcut_sifre || !yeni_sifre) {
+      return res
+        .status(400)
+        .json({ hata: "mevcut_sifre ve yeni_sifre zorunlu" });
+    }
+    if (typeof yeni_sifre !== "string" || yeni_sifre.length < 6) {
+      return res
+        .status(400)
+        .json({ hata: "Yeni şifre en az 6 karakter olmalı" });
+    }
+    if (yeni_sifre === mevcut_sifre) {
+      return res
+        .status(400)
+        .json({ hata: "Yeni şifre mevcut şifreden farklı olmalı" });
+    }
+
+    const result = await pool.query(
+      "SELECT sifre_hash FROM berber WHERE id = $1",
+      [req.berberId],
+    );
+    const kayitliHash = result.rows[0]?.sifre_hash;
+    const girilenHash = sifreHashle(String(mevcut_sifre));
+
+    const eslesiyor =
+      kayitliHash &&
+      kayitliHash.length === girilenHash.length &&
+      crypto.timingSafeEqual(
+        Buffer.from(kayitliHash),
+        Buffer.from(girilenHash),
+      );
+
+    if (!eslesiyor) {
+      return res.status(400).json({ hata: "Mevcut şifre hatalı" });
+    }
+
+    const yeniToken = yeniOturumTokeni();
+    await pool.query(
+      "UPDATE berber SET sifre_hash = $1, session_token = $2 WHERE id = $3",
+      [sifreHashle(yeni_sifre), yeniToken, req.berberId],
+    );
+
+    res.json({ basarili: true, sessionToken: yeniToken });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Çıkış (oturum token'ını temizler)
 router.post("/cikis", auth, async (req, res, next) => {
   try {
@@ -151,11 +204,9 @@ router.put("/sms-ayarlari", auth, async (req, res, next) => {
       netgsmYaniti = String(yanit.data).trim();
     } catch (err) {
       console.error("NetGSM doğrulama isteği hatası:", err.message);
-      return res
-        .status(502)
-        .json({
-          hata: "NetGSM'e ulaşılamadı, lütfen daha sonra tekrar deneyin",
-        });
+      return res.status(502).json({
+        hata: "NetGSM'e ulaşılamadı, lütfen daha sonra tekrar deneyin",
+      });
     }
 
     // NetGSM hatalı kullanıcı adı/şifre veya yetkisiz erişimde kısa bir hata kodu döner
@@ -164,11 +215,9 @@ router.put("/sms-ayarlari", auth, async (req, res, next) => {
       /^(30|40|50|51|70)\b/.test(netgsmYaniti) ||
       netgsmYaniti.toUpperCase().includes("HATA");
     if (hataKoduMu) {
-      return res
-        .status(400)
-        .json({
-          hata: "NetGSM kullanıcı kodu veya şifre hatalı, lütfen bilgilerinizi kontrol edin",
-        });
+      return res.status(400).json({
+        hata: "NetGSM kullanıcı kodu veya şifre hatalı, lütfen bilgilerinizi kontrol edin",
+      });
     }
 
     if (netgsm_password) {
