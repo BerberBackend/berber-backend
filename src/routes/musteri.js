@@ -44,7 +44,7 @@ router.get("/", auth, subscriptionCheck, async (req, res, next) => {
       params.push(`%${arama.trim()}%`);
     }
 
-    query += " ORDER BY kayit_tarihi DESC";
+    query += " ORDER BY LOWER(ad) ASC";
 
     const result = await pool.query(query, params);
     res.json(result.rows);
