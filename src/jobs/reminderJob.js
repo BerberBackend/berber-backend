@@ -3,8 +3,8 @@ const pool = require("../db");
 const { smsGonder } = require("../services/smsService");
 
 /**
- * Her 5 dakikada bir çalışır: randevusuna 2 saat kalan ve hatırlatması
- * daha önce gönderilmemiş randevuları bulup SMS gönderir.
+ * Her 5 dakikada bir çalışır: randevusuna 2 saat kalan, hatırlatması daha önce
+ * gönderilmemiş VE aboneliği aktif olan berberlere ait randevuları bulup SMS gönderir.
  */
 function hatirlatmaJobBaslat() {
   cron.schedule("*/5 * * * *", async () => {
@@ -13,14 +13,16 @@ function hatirlatmaJobBaslat() {
                 SELECT r.id, r.berber_id, r.musteri_id, r.tarih_saat, m.ad AS musteri_ad
                 FROM randevu r
                 JOIN musteri m ON m.id = r.musteri_id
+                JOIN berber b ON b.id = r.berber_id
                 WHERE r.durum = 'planlandi'
                   AND r.hatirlatma_gonderildi = FALSE
                   AND r.tarih_saat <= NOW() + INTERVAL '2 hours'
                   AND r.tarih_saat > NOW()
+                  AND b.abonelik_durum = 'aktif'
             `);
 
       for (const randevu of result.rows) {
-        const saatStr = randevu.tarih_saat.slice(11, 16); // 'YYYY-MM-DD HH:MM:SS' -> 'HH:MM'
+        const saatStr = randevu.tarih_saat.slice(11, 16); // 'HH:MM'
         const mesaj = `Sayın ${randevu.musteri_ad}, bugün saat ${saatStr} randevunuzu hatırlatırız.`;
 
         const sonuc = await smsGonder(
