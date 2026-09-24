@@ -53,4 +53,50 @@ router.get("/", auth, subscriptionCheck, async (req, res, next) => {
   }
 });
 
+// Müşteri bilgilerini güncelle
+router.put("/:id", auth, subscriptionCheck, async (req, res, next) => {
+  try {
+    const { ad, telefon } = req.body;
+    if (!ad || !telefon) {
+      return res.status(400).json({ hata: "ad ve telefon zorunlu" });
+    }
+
+    const result = await pool.query(
+      `UPDATE musteri SET ad = $1, telefon = $2
+             WHERE id = $3 AND berber_id = $4
+             RETURNING id, ad, telefon, kayit_tarihi`,
+      [ad, telefon, req.params.id, req.berberId],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ hata: "Müşteri bulunamadı" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    if (err.code === "23505") {
+      return res
+        .status(409)
+        .json({ hata: "Bu telefon numarasıyla kayıtlı başka bir müşteri var" });
+    }
+    next(err);
+  }
+});
+
+// Müşteriyi sil (DİKKAT: şemada ON DELETE CASCADE var, bu müşterinin randevu geçmişi de silinir)
+router.delete("/:id", auth, subscriptionCheck, async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      "DELETE FROM musteri WHERE id = $1 AND berber_id = $2 RETURNING id",
+      [req.params.id, req.berberId],
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ hata: "Müşteri bulunamadı" });
+    }
+    res.json({ basarili: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;
