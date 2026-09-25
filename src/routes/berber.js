@@ -284,4 +284,35 @@ router.put("/gun-baslangic", auth, async (req, res, next) => {
   }
 });
 
+// Şifre değiştir
+router.put("/sifre-degistir", auth, async (req, res, next) => {
+  try {
+    const { mevcut_sifre, yeni_sifre } = req.body;
+    if (!mevcut_sifre || !yeni_sifre) {
+      return res.status(400).json({ hata: "Mevcut ve yeni şifre zorunlu" });
+    }
+    if (yeni_sifre.length < 4) {
+      return res
+        .status(400)
+        .json({ hata: "Yeni şifre en az 4 karakter olmalı" });
+    }
+
+    const result = await pool.query(
+      "SELECT sifre_hash FROM berber WHERE id = $1",
+      [req.berberId],
+    );
+    if (result.rows[0].sifre_hash !== sifreHashle(mevcut_sifre)) {
+      return res.status(401).json({ hata: "Mevcut şifre hatalı" });
+    }
+
+    await pool.query("UPDATE berber SET sifre_hash = $1 WHERE id = $2", [
+      sifreHashle(yeni_sifre),
+      req.berberId,
+    ]);
+    res.json({ basarili: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;
